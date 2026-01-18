@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Cloud Dispatch – Project Flag Updater</title>
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        margin: 0;
+        padding: 0;
+        display: flex;
+        height: 100vh;
+      }
+      .sidebar,
+      .main {
+        padding: 20px;
+        overflow-y: auto;
+      }
+      .sidebar {
+        width: 350px;
+        background: #f7f7f7;
+        border-right: 1px solid #ccc;
+      }
+      .main {
+        flex: 1;
+        padding: 20px;
+      }
+      h2 {
+        margin-top: 0;
+      }
+      label {
+        display: block;
+        margin: 10px 0 5px;
+        font-weight: bold;
+      }
+      input,
+      button,
+      select {
+        width: 100%;
+        padding: 8px;
+        margin-bottom: 10px;
+        box-sizing: border-box;
+      }
+      button {
+        background-color: #3b82f6;
+        color: white;
+        border: none;
+        cursor: pointer;
+      }
+      button:hover {
+        background-color: #2563eb;
+      }
+      .log,
+      .output {
+        margin-top: 20px;
+        padding: 10px;
+        background: #f1f1f1;
+        border: 1px solid #ccc;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        margin-top: 20px;
+      }
+      th,
+      td {
+        padding: 8px;
+        border: 1px solid #ddd;
+        text-align: left;
+      }
+      th {
+        background-color: #eee;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="sidebar">
+      <h2>API Credentials</h2>
+      <label>Entity Reference</label>
+      <input id="entityRef" />
+      <label>API Key</label>
+      <input id="apiKey" />
+      <label>Client ID</label>
+      <input id="clientId" />
+      <label>Client Secret</label>
+      <input id="clientSecret" />
+      <label>API Scope Ref</label>
+      <input id="apiScopeRef" />
+      <button onclick="generateToken()">Generate Access Token</button>
+      <label>Bearer Token</label>
+      <input id="bearerToken" readonly />
+    </div>
+
+    <div class="main">
+      <h2>Project Management</h2>
+      <button onclick="fetchProjects()">Fetch Active Projects</button>
+      <button onclick="fetchProjectsNoVehicleType()">
+        Fetch Projects with No Vehicle Type
+      </button>
+      <button onclick="updateProjects()">Update ALL Projects</button>
+      <div class="log" id="log">Log output will appear here...</div>
+      <div class="output">
+        <table id="projectsTable" style="display: none">
+          <thead>
+            <tr>
+              <th>Project Ref</th>
+              <th>Project ID</th>
+              <th>Name</th>
+              <th>Customer Party ID</th>
+              <th>Customer Party Name</th>
+              <th>restrictedVehicleTypeRefs</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+
+    <script>
+      let token = "";
+      let baseUrl = "https://api.us.commandalkon.io";
+      let entityRef = "";
+      let apiKey = "";
+      let projects = [];
+
+      async function generateToken() {
+        entityRef = document.getElementById("entityRef").value;
+        apiKey = document.getElementById("apiKey").value;
+        const clientId = document.getElementById("clientId").value;
+        const clientSecret = document.getElementById("clientSecret").value;
+        const apiScopeRef = document.getElementById("apiScopeRef").value;
+
+        try {
+          const loginRes = await fetch(
+            `${baseUrl}/v4/services/authnz/${entityRef}/api/login`,
+            {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                "x-api-key": apiKey,
+              },
+              body: JSON.stringify({ clientId, clientSecret, apiScopeRef }),
+            }
+          );
+
+          const loginData = await loginRes.json();
+          const refreshToken = loginData.refresh_token;
+
+          const tokenRes = await fetch(
+            `${baseUrl}/v4/services/authnz/${entityRef}/api/tokens/refresh-access-token`,
+            {
+              headers: {
+                "x-api-key": apiKey,
+                authorization: `Bearer ${refreshToken}`,
+              },
+            }
+          );
+
+          const tokenData = await tokenRes.json();
+
+          if (!tokenData.access_token) {
+            document.getElementById("log").textContent =
+              "❌ Failed to retrieve access token.";
+            return;
+          }
+
+          token = tokenData.access_token;
+          document.getElementById("bearerToken").value = token;
+          document.getElementById("log").textContent =
+            "✅ Access token generated successfully.";
+        } catch (err) {
+          document.getElementById(
+            "log"
+          ).textContent = `Error generating token: ${err.message}`;
+        }
+      }
+
+      async function fetchProjects(filterNoVehicle = false) {
+        const res = await fetch(
+          `${baseUrl}/v4/services/setup/${entityRef}/projects`,
+          {
+            headers: {
+              Authorization: `Bearer ${token}`,
+              "x-api-key": apiKey,
+            },
+          }
+        );
+
+        const data = await res.json();
+        projects = data.filter(p => p.status?.toUpperCase() === "ACTIVE");
+        if (filterNoVehicle) {
+          projects = projects.filter(
+            p =>
+              !Array.isArray(p.restrictedVehicleTypeRefs) ||
+              p.restrictedVehicleTypeRefs.length === 0
+          );
+        }
+
+        const table = document.getElementById("projectsTable");
+        const tbody = table.querySelector("tbody");
+        tbody.innerHTML = "";
+
+        projects.forEach(p => {
+          const row = document.createElement("tr");
+          row.innerHTML = `
+          <td>${p.crn}</td>
+          <td>${p.id}</td>
+          <td>${p.name}</td>
+          <td>${p.customerParty?.id || ""}</td>
+          <td>${p.customerParty?.name || ""}</td>
+          <td>${p.restrictedVehicleTypeRefs?.join(", ") || ""}</td>
+          <td><button onclick="updateSingleProject('${
+            p.crn
+          }')">Update</button></td>
+        `;
+          tbody.appendChild(row);
+        });
+
+        table.style.display = "table";
+        document.getElementById("log").innerText = `📄 Fetched ${
+          projects.length
+        } ${
+          filterNoVehicle
+            ? "projects WITHOUT restrictedVehicleTypeRefs"
+            : "active projects"
+        }.`;
+      }
+
+      function fetchProjectsNoVehicleType() {
+        fetchProjects(true);
+      }
+
+      async function updateSingleProject(crn) {
+        const payload = {
+          restrictedVehicleTypeRefs: ["cffe3344-b334-59ee-8ba4-abaf0325a1eb"],
+        };
+
+        const res = await fetch(
+          `${baseUrl}/v4/services/setup/${entityRef}/projects/${crn}`,
+          {
+            method: "PATCH",
+            headers: {
+              Authorization: `Bearer ${token}`,
+              "x-api-key": apiKey,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify(payload),
+          }
+        );
+
+        if (res.ok) {
+          document.getElementById(
+            "log"
+          ).innerText = `✅ Updated project ${crn} successfully.`;
+        } else {
+          const errText = await res.text();
+          document.getElementById(
+            "log"
+          ).innerText = `❌ Error updating project ${crn}:\n${errText}`;
+        }
+      }
+
+      async function updateProjects() {
+        const newValue = ["cffe3344-b334-59ee-8ba4-abaf0325a1eb"];
+        let updated = 0;
+
+        for (const p of projects) {
+          const body = {
+            restrictedVehicleTypeRefs: newValue,
+          };
+
+          const res = await fetch(
+            `${baseUrl}/v4/services/setup/${entityRef}/projects/${p.crn}`,
+            {
+              method: "PATCH",
+              headers: {
+                Authorization: `Bearer ${token}`,
+                "x-api-key": apiKey,
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify(body),
+            }
+          );
+
+          if (res.ok) updated++;
+        }
+
+        document.getElementById(
+          "log"
+        ).innerText += `\n✅ Updated ${updated} projects.`;
+      }
+    </script>
+  </body>
+</html>
